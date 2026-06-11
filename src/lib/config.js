@@ -32,7 +32,7 @@ const config = {
   // ─── WhatsApp Bot Settings ────────────────────────────────────────────
   BOT_NAME: process.env.BOT_NAME || 'DeltaAI',
   BOT_LANGUAGE: process.env.BOT_LANGUAGE || 'ar',
-  DEFAULT_MODEL: process.env.DEFAULT_MODEL || 'delta-general',
+  DEFAULT_MODEL: process.env.DEFAULT_MODEL || 'delta-flash',
 
   // ─── Pairing Code (no QR scan needed!) ───────────────────────────────
   // Your WhatsApp number with country code (e.g. 201234567890 for Egypt)
