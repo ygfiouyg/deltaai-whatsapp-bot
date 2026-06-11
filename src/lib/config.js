@@ -1,8 +1,9 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// DeltaAI WhatsApp Bot v2 — Configuration (Render Edition)
+// DeltaAI WhatsApp Bot v3 — Configuration
 // ═══════════════════════════════════════════════════════════════════════════
 // All settings are controlled via environment variables.
-// On Render, set these as "Environment Variables" in the dashboard.
+// On Termux/localhost, set these in the .env file.
+// On hosting platforms, set them as environment variables.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { readFileSync, existsSync } from 'fs';
@@ -32,6 +33,11 @@ const config = {
   BOT_NAME: process.env.BOT_NAME || 'DeltaAI',
   BOT_LANGUAGE: process.env.BOT_LANGUAGE || 'ar',
   DEFAULT_MODEL: process.env.DEFAULT_MODEL || 'delta-general',
+
+  // ─── Pairing Code (no QR scan needed!) ───────────────────────────────
+  // Your WhatsApp number with country code (e.g. 201234567890 for Egypt)
+  // When set, bot will use pairing code method instead of QR scan
+  PHONE_NUMBER: process.env.PHONE_NUMBER || '',
 
   // ─── Web Server (for QR code display from phone) ──────────────────────
   // Render provides PORT env var automatically — use it if available

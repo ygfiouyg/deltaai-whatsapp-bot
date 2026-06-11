@@ -1,7 +1,7 @@
 {
   "name": "deltaai-whatsapp-bot-v2",
-  "version": "2.2.0",
-  "description": "DeltaAI WhatsApp Bot — Free forever with web QR page | Works on Glitch, Render, etc.",
+  "version": "3.0.0",
+  "description": "DeltaAI WhatsApp Bot v3 — Pairing Code + QR, works on Termux, no credit card needed!",
   "type": "module",
   "scripts": {
     "start": "node src/index.js",

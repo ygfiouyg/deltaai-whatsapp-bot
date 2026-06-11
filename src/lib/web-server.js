@@ -1,18 +1,18 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// DeltaAI WhatsApp Bot v2 — Web Server for QR Code Display
+// DeltaAI WhatsApp Bot v3 — Web Server for Status & Pairing Code Display
 // ═══════════════════════════════════════════════════════════════════════════
 // This module runs a small HTTP server that serves a beautiful web page
-// where the user can see the WhatsApp QR code from their phone browser.
+// where the user can see the pairing code or QR code from their phone browser.
 //
-// HOW IT WORKS:
-// 1. Bot starts → Web server starts (on PORT from env or 10000)
-// 2. User opens the URL on their phone
-// 3. Page shows QR code + Arabic instructions
-// 4. User scans QR from WhatsApp → Bot connects
-// 5. Page updates to show "Connected!" status
+// PAIRING CODE METHOD (preferred):
+// 1. Bot starts → shows pairing code like "ABCD-EFGH"
+// 2. User opens WhatsApp → Settings → Linked Devices → Link with phone number
+// 3. User enters the code → Bot connects!
+// No camera needed — perfect for phone-only users!
 //
-// SELF-PING: Keeps the free tier awake by pinging external URL every 5 min
-// Supports: Glitch (PROJECT_DOMAIN), Render (RENDER_EXTERNAL_URL), etc.
+// QR CODE METHOD (fallback):
+// 1. Bot starts → shows QR on web page
+// 2. User scans QR from WhatsApp → Bot connects
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { createServer } from 'http';
@@ -22,6 +22,7 @@ import config from './config.js';
 // ─── Shared State (set by index.js) ────────────────────────────────────
 let botState = {
   qrCodeDataUrl: null,
+  pairingCode: null,
   isConnected: false,
   botNumber: null,
   lastQRTime: null,
@@ -53,9 +54,15 @@ export async function setQRCode(qrString) {
   }
 }
 
+export function setPairingCode(code) {
+  botState.pairingCode = code;
+  console.log(`[Web] Pairing code set: ${code}`);
+}
+
 function generateHTML() {
   const state = botState;
   const connected = state.isConnected;
+  const hasPairingCode = !!state.pairingCode;
   const hasQR = !!state.qrCodeDataUrl;
   const qrAge = state.lastQRTime ? Math.round((Date.now() - state.lastQRTime) / 1000) : null;
   const uptimeSeconds = Math.round((Date.now() - state.uptime) / 1000);
@@ -63,6 +70,7 @@ function generateHTML() {
     : uptimeSeconds < 3600 ? `${Math.floor(uptimeSeconds / 60)}m ${uptimeSeconds % 60}s`
     : `${Math.floor(uptimeSeconds / 3600)}h ${Math.floor((uptimeSeconds % 3600) / 60)}m`;
 
+  // ─── Status Bar ──────────────────────────────────────────────────────
   let statusHTML;
   if (connected) {
     statusHTML = `
@@ -71,6 +79,15 @@ function generateHTML() {
         <div>
           <div class="status-title">متصل!</div>
           <div class="status-sub">رقم الواتساب: ${state.botNumber || '---'}</div>
+        </div>
+      </div>`;
+  } else if (hasPairingCode) {
+    statusHTML = `
+      <div class="status waiting">
+        <div class="status-dot yellow pulse"></div>
+        <div>
+          <div class="status-title">في انتظار الربط</div>
+          <div class="status-sub">اكتب الكود في واتساب</div>
         </div>
       </div>`;
   } else if (hasQR) {
@@ -93,10 +110,11 @@ function generateHTML() {
       </div>`;
   }
 
-  let qrHTML;
+  // ─── Main Content Area ───────────────────────────────────────────────
+  let mainHTML;
   if (connected) {
-    qrHTML = `
-      <div class="qr-container connected-state">
+    mainHTML = `
+      <div class="code-container connected-state">
         <div class="checkmark">
           <svg viewBox="0 0 100 100" width="120" height="120">
             <circle cx="50" cy="50" r="45" fill="#25D366" opacity="0.15"/>
@@ -105,33 +123,55 @@ function generateHTML() {
         </div>
         <div class="connected-text">البوت شغال وجاهز!</div>
       </div>`;
+  } else if (hasPairingCode) {
+    mainHTML = `
+      <div class="code-container">
+        <div class="pairing-label">كود الربط</div>
+        <div class="pairing-code">${state.pairingCode}</div>
+        <div class="pairing-hint">اكتب الكود ده في واتساب</div>
+      </div>`;
   } else if (hasQR) {
-    qrHTML = `
-      <div class="qr-container">
+    mainHTML = `
+      <div class="code-container">
         <img src="${state.qrCodeDataUrl}" alt="WhatsApp QR Code" class="qr-image" />
       </div>`;
   } else {
-    qrHTML = `
-      <div class="qr-container loading-state">
+    mainHTML = `
+      <div class="code-container loading-state">
         <div class="spinner"></div>
-        <div class="loading-text">جاري توليد كود الـ QR...</div>
+        <div class="loading-text">جاري توليد الكود...</div>
       </div>`;
   }
 
+  // ─── Instructions ────────────────────────────────────────────────────
   let instructionsHTML;
   if (connected) {
     instructionsHTML = `
       <div class="instructions success-box">
         <h3>البوت شغال!</h3>
         <p>الناس تقدر تبعت رسائل للرقم ده والبوت هيرد عليهم باستخدام DeltaAI.</p>
-        <p>الصفحة دي بتتحدث تلقائيًا — لو البوت فصل هتلاقي كود QR جديد هنا.</p>
+        <p>الصفحة دي بتتحدث تلقائي.</p>
+      </div>`;
+  } else if (hasPairingCode) {
+    instructionsHTML = `
+      <div class="instructions">
+        <h3>ازاي تربط الواتساب بالبوت؟</h3>
+        <ol>
+          <li><strong>افتح واتساب</strong> على الموبايل</li>
+          <li>روح <strong>الإعدادات</strong></li>
+          <li>اضغط على <strong>الأجهزة المرتبطة</strong></li>
+          <li>اضغط <strong>ربط جهاز</strong></li>
+          <li>اختار <strong>ربط برقم الهاتف</strong></li>
+          <li><strong>اكتب الكود</strong> اللي ظاهر فوق ده: <strong class="highlight-code">${state.pairingCode}</strong></li>
+        </ol>
+        <p class="note">الكود صالح لفترة محدودة — لو انتهى هيظهر كود جديد تلقائي</p>
       </div>`;
   } else {
     instructionsHTML = `
       <div class="instructions">
         <h3>ازاي توصل الواتساب بالبوت؟</h3>
         <ol>
-          <li><strong>افتح واتساب</strong> على الموبايل اللي عليه الرقم المصري</li>
+          <li><strong>افتح واتساب</strong> على الموبايل</li>
           <li>روح <strong>الإعدادات</strong></li>
           <li>اضغط على <strong>الأجهزة المرتبطة</strong></li>
           <li>اضغط <strong>ربط جهاز</strong></li>
@@ -174,12 +214,16 @@ function generateHTML() {
     @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } }
     .status-title { font-size: 16px; font-weight: 600; }
     .status-sub { font-size: 13px; color: #8b949e; margin-top: 2px; }
-    .qr-container { background: white; border-radius: 20px; padding: 24px; margin-bottom: 24px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; min-height: 300px; min-width: 280px; position: relative; overflow: hidden; }
-    .qr-container::before { content: ''; position: absolute; top: -2px; left: -2px; right: -2px; bottom: -2px; background: linear-gradient(45deg, #25D366, #58a6ff, #25D366); border-radius: 22px; z-index: -1; opacity: 0.6; }
+    .code-container { background: white; border-radius: 20px; padding: 24px; margin-bottom: 24px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; min-height: 300px; min-width: 280px; position: relative; overflow: hidden; flex-direction: column; }
+    .code-container::before { content: ''; position: absolute; top: -2px; left: -2px; right: -2px; bottom: -2px; background: linear-gradient(45deg, #25D366, #58a6ff, #25D366); border-radius: 22px; z-index: -1; opacity: 0.6; }
+    .pairing-label { color: #666; font-size: 14px; margin-bottom: 12px; font-weight: 600; }
+    .pairing-code { color: #25D366; font-size: 48px; font-weight: 800; letter-spacing: 6px; font-family: 'Courier New', monospace; direction: ltr; }
+    .pairing-hint { color: #888; font-size: 13px; margin-top: 12px; }
+    .highlight-code { color: #25D366; font-size: 16px; direction: ltr; }
     .qr-image { width: 260px; height: 260px; image-rendering: pixelated; }
-    .connected-state { flex-direction: column; gap: 12px; }
+    .connected-state { gap: 12px; }
     .connected-text { color: #25D366; font-size: 18px; font-weight: 700; }
-    .loading-state { flex-direction: column; gap: 16px; }
+    .loading-state { gap: 16px; }
     .spinner { width: 50px; height: 50px; border: 4px solid #e0e0e0; border-top-color: #25D366; border-radius: 50%; animation: spin 0.8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .loading-text { color: #666; font-size: 14px; }
@@ -204,7 +248,7 @@ function generateHTML() {
     <div class="badge">100% Free Forever</div>
   </div>
   ${statusHTML}
-  ${qrHTML}
+  ${mainHTML}
   ${instructionsHTML}
   <div class="footer">
     <div class="stats">
@@ -243,6 +287,7 @@ export function startWebServer() {
           connected: botState.isConnected,
           botNumber: botState.botNumber,
           hasQR: !!botState.qrCodeDataUrl,
+          pairingCode: botState.pairingCode,
           lastQRTime: botState.lastQRTime,
           messageCount: botState.messageCount,
           userCount: botState.userCount,
@@ -268,7 +313,7 @@ export function startWebServer() {
     });
 
     server.listen(config.WEB_PORT, config.WEB_HOST, () => {
-      console.log(`[Web] QR code page: http://localhost:${config.WEB_PORT}`);
+      console.log(`[Web] Status page: http://localhost:${config.WEB_PORT}`);
       resolve(server);
     });
 
@@ -278,19 +323,15 @@ export function startWebServer() {
     });
   });
 
-  // Self-ping to keep free tier awake (Glitch, Render, etc.)
-  // Glitch sleeps after 5 min of no external traffic, so we ping the external URL
+  // Self-ping to keep free hosting awake (if applicable)
   setTimeout(() => {
     const getExternalUrl = () => {
-      // Glitch provides PROJECT_DOMAIN env var
       if (process.env.PROJECT_DOMAIN) {
         return `https://${process.env.PROJECT_DOMAIN}.glitch.me/health`;
       }
-      // Render provides RENDER_EXTERNAL_URL
       if (process.env.RENDER_EXTERNAL_URL) {
         return `${process.env.RENDER_EXTERNAL_URL}/health`;
       }
-      // Fallback to localhost
       return `http://localhost:${config.WEB_PORT}/health`;
     };
 
@@ -304,6 +345,6 @@ export function startWebServer() {
       } catch (e) {
         // Silently retry next interval
       }
-    }, 5 * 60 * 1000); // every 5 minutes
+    }, 5 * 60 * 1000);
   }, 30000);
 }
