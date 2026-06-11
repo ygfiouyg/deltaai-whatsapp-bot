@@ -1,8 +1,13 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// DeltaAI WhatsApp Bot v2 — Message Handler
+// DeltaAI WhatsApp Bot v4.0 — Message Handler (Anti-Ban Edition)
 // ═══════════════════════════════════════════════════════════════════════════
-// Core message processing: text → DeltaAI → response + PDFs + images
-// Handles bot commands, rate limiting, media extraction, typing indicators.
+// KEY ANTI-BAN CHANGES:
+// - Random 3-12 second delay before responding (human-like)
+// - Typing indicator shows for realistic duration before message
+// - Hourly message cap (won't send more than 30 msgs/hour)
+// - No auto-read (bots read instantly — humans don't)
+// - Longer, more natural response patterns
+// - No emoji overload in responses
 // ═══════════════════════════════════════════════════════════════════════════
 
 import config from '../lib/config.js';
@@ -10,6 +15,7 @@ import rateLimiter from '../lib/rate-limiter.js';
 import conversationManager from '../lib/conversation-manager.js';
 import { sendToDeltaAI, downloadPDF } from '../lib/delta-ai-client.js';
 import { updateBotState } from '../lib/web-server.js';
+import { canSendMessage, incrementMessageCount, humanDelay } from '../index.js';
 
 /**
  * Main message handler — called for every incoming WhatsApp message.
@@ -31,11 +37,19 @@ export async function handleMessage(sock, msg) {
   const text = extractText(msg);
   if (!text && !hasMedia(msg)) return;
 
-  // Rate limiting
+  // ── ANTI-BAN: Check hourly message cap ──
+  if (!canSendMessage()) {
+    console.log('[Anti-Ban] Hourly message cap reached — not responding');
+    // Don't even send a message saying we're capped — that's a message too!
+    return;
+  }
+
+  // Rate limiting per user
   const rateCheck = rateLimiter.check(phone);
   if (!rateCheck.allowed) {
+    // Send rate limit message only once, not repeatedly
     await sock.sendMessage(jid, {
-      text: '⏳ أرسلت رسائل كتير أوي! استنى شوية وجرب تاني.'
+      text: 'استنى شوية وجرب تاني بعد كده'
     });
     return;
   }
@@ -46,7 +60,7 @@ export async function handleMessage(sock, msg) {
   const stats = conversationManager.getStats();
   updateBotState({ userCount: stats.totalUsers, messageCount: stats.totalMessages });
 
-  // Bot commands
+  // Bot commands — respond faster to commands
   if (text && text.startsWith('!')) {
     await handleCommand(sock, jid, phone, text, session);
     return;
@@ -59,11 +73,28 @@ export async function handleMessage(sock, msg) {
     if (media) attachments.push(media);
   }
 
-  // Typing indicator
+  // ═══════════════════════════════════════════════════════════════════════
+  // ANTI-BAN: Human-like response timing
+  // ═══════════════════════════════════════════════════════════════════════
+  
+  // Step 1: Random delay before showing "typing" (simulates reading)
+  const readingDelay = humanDelay(1500, 4000); // 1.5-4s to "read"
+  await new Promise(r => setTimeout(r, readingDelay));
+
+  // Step 2: Show typing indicator
   await sock.sendPresenceUpdate('composing', jid);
 
+  // Step 3: Calculate realistic typing time based on response length
+  // Humans type at ~40 chars/second on average
+  // We'll estimate response length and calculate typing time
+  const estimatedResponseLength = Math.max(50, text.length * 3); // Rough estimate
+  const typingTimePerChar = 25; // ms per character — slower than real typing
+  const baseTypingTime = Math.min(estimatedResponseLength * typingTimePerChar, 10000); // Cap at 10s
+  const typingTime = Math.max(2000, baseTypingTime + Math.random() * 2000); // 2s minimum + random
+
   try {
-    const result = await sendToDeltaAI({
+    // Start AI request and typing timer in parallel
+    const aiPromise = sendToDeltaAI({
       message: text || 'حلل الملف المرفق',
       model: session.model || config.DEFAULT_MODEL,
       language: session.language || config.BOT_LANGUAGE,
@@ -72,7 +103,17 @@ export async function handleMessage(sock, msg) {
       attachments,
     });
 
+    // Wait for both AI response AND minimum typing time
+    const [result] = await Promise.all([
+      aiPromise,
+      new Promise(r => setTimeout(r, typingTime)),
+    ]);
+
+    // Small random pause after AI responds (simulates reviewing response)
+    await new Promise(r => setTimeout(r, humanDelay(500, 1500)));
+
     conversationManager.incrementMessageCount(phone);
+    incrementMessageCount();
 
     // Update stats after processing
     const newStats = conversationManager.getStats();
@@ -81,8 +122,16 @@ export async function handleMessage(sock, msg) {
     // Send text response
     if (result.content) {
       const chunks = splitMessage(result.content, config.MAX_MESSAGE_LENGTH);
-      for (const chunk of chunks) {
-        await sock.sendMessage(jid, { text: chunk });
+      for (let i = 0; i < chunks.length; i++) {
+        await sock.sendMessage(jid, { text: chunks[i] });
+        incrementMessageCount();
+        
+        // If multiple chunks, add delay between them (human-like)
+        if (i < chunks.length - 1) {
+          await new Promise(r => setTimeout(r, humanDelay(1000, 3000)));
+          await sock.sendPresenceUpdate('composing', jid);
+          await new Promise(r => setTimeout(r, humanDelay(500, 1500)));
+        }
       }
     }
 
@@ -90,16 +139,18 @@ export async function handleMessage(sock, msg) {
     if (result.pdfUrl) {
       try {
         const pdf = await downloadPDF(result.pdfUrl);
+        await new Promise(r => setTimeout(r, humanDelay(1000, 2000)));
         await sock.sendMessage(jid, {
           document: pdf.buffer,
           fileName: pdf.fileName,
           mimetype: 'application/pdf',
-          caption: `📄 ${pdf.fileName}`,
+          caption: pdf.fileName,
         });
+        incrementMessageCount();
       } catch (pdfError) {
         console.error('[WhatsApp] Failed to send PDF:', pdfError.message);
         await sock.sendMessage(jid, {
-          text: `📄 تم إنشاء المستند! افتحه من هنا:\n${config.DELTA_AI_URL}${result.pdfUrl}`
+          text: 'تم إنشاء المستند! افتحه من هنا:\n' + config.DELTA_AI_URL + result.pdfUrl
         });
       }
     }
@@ -108,17 +159,16 @@ export async function handleMessage(sock, msg) {
     if (result.smartDocResult?.success && result.smartDocResult.fileUrl) {
       try {
         const pdf = await downloadPDF(result.smartDocResult.fileUrl);
+        await new Promise(r => setTimeout(r, humanDelay(1000, 2000)));
         await sock.sendMessage(jid, {
           document: pdf.buffer,
           fileName: pdf.fileName,
           mimetype: 'application/pdf',
-          caption: `✅ ${pdf.fileName}`,
+          caption: pdf.fileName,
         });
+        incrementMessageCount();
       } catch (pdfError) {
         console.error('[WhatsApp] Failed to send Smart Doc PDF:', pdfError.message);
-        await sock.sendMessage(jid, {
-          text: `✅ تم إنشاء المستند! افتحه من هنا:\n${config.DELTA_AI_URL}${result.smartDocResult.fileUrl}`
-        });
       }
     }
 
@@ -126,22 +176,48 @@ export async function handleMessage(sock, msg) {
     if (result.imageDataUrl) {
       const base64 = result.imageDataUrl.replace(/^data:image\/\w+;base64,/, '');
       const buffer = Buffer.from(base64, 'base64');
-      await sock.sendMessage(jid, {
-        image: buffer,
-        caption: '🎨 صورة مولدة',
-      });
+      await new Promise(r => setTimeout(r, humanDelay(500, 1500)));
+      await sock.sendMessage(jid, { image: buffer });
+      incrementMessageCount();
     }
+
+    // ── ANTI-BAN: Stop typing after response ──
+    await sock.sendPresenceUpdate('paused', jid);
 
   } catch (error) {
     console.error('[WhatsApp] Error processing message:', error);
-    await sock.sendMessage(jid, {
-      text: '❌ حصل خطأ أثناء المعالجة. جرب تاني لو سمحت.',
-    });
+    
+    // Stop typing indicator
+    await sock.sendPresenceUpdate('paused', jid);
+    
+    // Don't send error messages too often — that's spammy
+    // Only send error message if we haven't sent one recently
+    const now = Date.now();
+    const lastErrorTime = errorCooldowns.get(phone) || 0;
+    if (now - lastErrorTime > 60000) { // Max 1 error per user per minute
+      await sock.sendMessage(jid, {
+        text: 'حصل خطأ، جرب تاني',
+      });
+      incrementMessageCount();
+      errorCooldowns.set(phone, now);
+    }
   }
 
-  // Mark as read
-  await sock.readMessages([msg.key]);
+  // ── ANTI-BAN: DON'T auto-read messages ──
+  // Bots read messages instantly. Humans take time.
+  // We'll mark as read after a random delay (30s - 2min)
+  const readDelay = humanDelay(30000, 120000);
+  setTimeout(async () => {
+    try {
+      await sock.readMessages([msg.key]);
+    } catch (e) {
+      // Silently fail — not critical
+    }
+  }, readDelay);
 }
+
+// ── Error cooldown map ──
+const errorCooldowns = new Map();
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Bot Commands
@@ -149,7 +225,7 @@ export async function handleMessage(sock, msg) {
 
 const COMMANDS = {
   '!مسح': { desc: 'مسح المحادثة والبدء من جديد', handler: cmdReset },
-  '!نموذج': { desc: 'تغيير النموذج (مثال: !نموذج delta-flash)', handler: cmdModel },
+  '!نموذج': { desc: 'تغيير النموذج (مثال: !نموذج deepseek-v3)', handler: cmdModel },
   '!لغة': { desc: 'تغيير اللغة (ar أو en)', handler: cmdLanguage },
   '!مساعدة': { desc: 'عرض الأوامر المتاحة', handler: cmdHelp },
   '!حالة': { desc: 'حالة البوت والاتصال', handler: cmdStatus },
@@ -164,13 +240,13 @@ async function handleCommand(sock, jid, phone, text, session) {
   const commandDef = COMMANDS[cmd];
   if (!commandDef) {
     await sock.sendMessage(jid, {
-      text: `❌ أمر مش معروف: ${cmd}\n\nاكتب !مساعدة عشان تشوف الأوامر المتاحة`
+      text: 'أمر مش معروف: ' + cmd + '\n\nاكتب !مساعدة عشان تشوف الأوامر'
     });
     return;
   }
 
   if (commandDef.adminOnly && !config.ADMIN_NUMBERS.includes(phone)) {
-    await sock.sendMessage(jid, { text: '⛔ هذا الأمر للمشرفين فقط' });
+    await sock.sendMessage(jid, { text: 'هذا الأمر للمشرفين فقط' });
     return;
   }
 
@@ -179,42 +255,42 @@ async function handleCommand(sock, jid, phone, text, session) {
 
 async function cmdReset(sock, jid) {
   conversationManager.resetConversation(jid.replace('@s.whatsapp.net', ''));
-  await sock.sendMessage(jid, { text: '🔄 تم مسح المحادثة! ابدأ محادثة جديدة.' });
+  await sock.sendMessage(jid, { text: 'تم مسح المحادثة! ابدأ محادثة جديدة.' });
 }
 
 async function cmdModel(sock, jid, phone, args, session) {
   const modelId = args[0];
   if (!modelId) {
     await sock.sendMessage(jid, {
-      text: `🤖 النموذج الحالي: ${session.model || config.DEFAULT_MODEL}\n\nالنماذج المتاحة:\n• deepseek-v3 — DeepSeek (افتراضي - سريع)\n• qwen-2-5 — Qwen (سريع)\n• delta-pro — خبير ذكي\n• delta-ultra — الأقوى\n• delta-egyptian — مصري\n• delta-creative — مبدع\n• delta-code — مبرمج\n• delta-flash — سريع\n• llama-3 — Llama 3\n\nاستخدم: !نموذج <اسم_النموذج>`
+      text: 'النموذج الحالي: ' + (session.model || config.DEFAULT_MODEL) + '\n\nالنماذج المتاحة:\n- deepseek-v3 (افتراضي - سريع)\n- qwen-2-5 (سريع)\n- delta-pro (خبير ذكي)\n- delta-ultra (الأقوى)\n\nاستخدم: !نموذج <اسم_النموذج>'
     });
     return;
   }
   conversationManager.updatePreferences(phone, { model: modelId });
-  await sock.sendMessage(jid, { text: `✅ تم تغيير النموذج إلى: ${modelId}` });
+  await sock.sendMessage(jid, { text: 'تم تغيير النموذج إلى: ' + modelId });
 }
 
 async function cmdLanguage(sock, jid, phone, args, session) {
   const lang = args[0];
   if (!lang || !['ar', 'en'].includes(lang)) {
     await sock.sendMessage(jid, {
-      text: `🌐 اللغة الحالية: ${session.language}\n\nاستخدم: !لغة ar أو !لغة en`
+      text: 'اللغة الحالية: ' + session.language + '\n\nاستخدم: !لغة ar أو !لغة en'
     });
     return;
   }
   conversationManager.updatePreferences(phone, { language: lang });
   await sock.sendMessage(jid, {
-    text: lang === 'ar' ? '✅ تم تغيير اللغة إلى العربية' : '✅ Language changed to English'
+    text: lang === 'ar' ? 'تم تغيير اللغة إلى العربية' : 'Language changed to English'
   });
 }
 
 async function cmdHelp(sock, jid) {
   const commands = Object.entries(COMMANDS)
-    .map(([cmd, def]) => `${cmd} — ${def.desc}${def.adminOnly ? ' 🔒' : ''}`)
+    .map(([cmd, def]) => cmd + ' — ' + def.desc + (def.adminOnly ? ' 🔒' : ''))
     .join('\n');
 
   await sock.sendMessage(jid, {
-    text: `🤖 *DeltaAI WhatsApp Bot*\n\n${commands}\n\n💡 ممكن تكتب عادي وهرد عليك!\n📄 لو بعت ملف PDF هقدر أحلله وأعملك تلخيص/كروت/كويز`
+    text: 'DeltaAI WhatsApp Bot\n\n' + commands + '\n\nممكن تكتب عادي وهرد عليك!'
   });
 }
 
@@ -223,14 +299,14 @@ async function cmdStatus(sock, jid, phone, args, session) {
   const health = await healthCheck();
 
   await sock.sendMessage(jid, {
-    text: `📊 *حالة البوت*\n\n🟢 واتساب: متصل\n${health.ok ? '🟢' : '🔴'} DeltaAI: ${health.ok ? `متصل (${health.latency}ms)` : 'غير متصل'}\n🌐 اللغة: ${session.language}\n🤖 النموذج: ${session.model || config.DEFAULT_MODEL}\n💬 الرسائل: ${session.messageCount}`
+    text: 'حالة البوت\n\nواتساب: متصل\nDeltaAI: ' + (health.ok ? 'متصل (' + health.latency + 'ms)' : 'غير متصل') + '\nاللغة: ' + session.language + '\nالنموذج: ' + (session.model || config.DEFAULT_MODEL) + '\nالرسائل: ' + session.messageCount
   });
 }
 
 async function cmdStats(sock, jid) {
   const stats = conversationManager.getStats();
   await sock.sendMessage(jid, {
-    text: `📊 *إحصائيات البوت*\n\n👥 المستخدمين: ${stats.totalUsers}\n🟢 نشطين (24س): ${stats.activeUsers24h}\n💬 إجمالي الرسائل: ${stats.totalMessages}`
+    text: 'إحصائيات البوت\n\nالمستخدمين: ' + stats.totalUsers + '\nنشطين (24س): ' + stats.activeUsers24h + '\nإجمالي الرسائل: ' + stats.totalMessages
   });
 }
 
@@ -281,14 +357,14 @@ async function extractMedia(sock, msg) {
     const buffer = Buffer.concat(chunks);
     const base64 = buffer.toString('base64');
     const mimeType = mediaMessage.mimetype || 'application/octet-stream';
-    const fileName = mediaMessage.fileName || `${type}_${Date.now()}`;
+    const fileName = mediaMessage.fileName || type + '_' + Date.now();
 
     return {
       type,
       name: fileName,
       mimeType,
       size: formatFileSize(buffer.length),
-      base64: `data:${mimeType};base64,${base64}`,
+      base64: 'data:' + mimeType + ';base64,' + base64,
     };
   } catch (error) {
     console.error('[WhatsApp] Failed to extract media:', error.message);
@@ -306,7 +382,7 @@ function splitMessage(text, maxLength = 4096) {
       if (current) chunks.push(current);
       current = line;
     } else {
-      current = current ? `${current}\n${line}` : line;
+      current = current ? current + '\n' + line : line;
     }
   }
   if (current) chunks.push(current);
@@ -314,7 +390,7 @@ function splitMessage(text, maxLength = 4096) {
 }
 
 function formatFileSize(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }

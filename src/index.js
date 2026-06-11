@@ -1,8 +1,14 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// DeltaAI WhatsApp Bot v3.2 — Main Entry Point
+// DeltaAI WhatsApp Bot v4.0 — Anti-Ban Edition
 // ═══════════════════════════════════════════════════════════════════════════
-// Auto-handles 401 disconnections by clearing auth and re-pairing.
-// Supports PAIRING CODE (preferred) and QR CODE (fallback).
+// KEY CHANGES FROM v3:
+// - Human-like response delays (3-12s random)
+// - Realistic typing indicators with variable duration
+// - Hourly message cap to prevent spam detection
+// - Better browser fingerprint (Android Chrome)
+// - No auto-read messages (bots read instantly, humans don't)
+// - Presence updates that mimic real usage patterns
+// - Longer reconnect delays to look natural
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
@@ -22,6 +28,26 @@ let sock = null;
 let isStarting = false;
 let webServerStarted = false;
 let reconnectCount = 0;
+let lastConnectionTime = null;
+let messageCountThisHour = 0;
+let messageCountResetTime = Date.now();
+
+// ─── Anti-Ban: Hourly message cap ──────────────────────────────────────
+const MAX_MESSAGES_PER_HOUR = 30; // WhatsApp flags accounts sending 100+ msgs/hour
+
+export function canSendMessage() {
+  const now = Date.now();
+  // Reset counter every hour
+  if (now - messageCountResetTime > 60 * 60 * 1000) {
+    messageCountThisHour = 0;
+    messageCountResetTime = now;
+  }
+  return messageCountThisHour < MAX_MESSAGES_PER_HOUR;
+}
+
+export function incrementMessageCount() {
+  messageCountThisHour++;
+}
 
 // ─── Clean Auth Data ─────────────────────────────────────────────────────
 function cleanAuth() {
@@ -35,6 +61,12 @@ function cleanAuth() {
   }
 }
 
+// ─── Human-like random delay ────────────────────────────────────────────
+export function humanDelay(minMs = 2000, maxMs = 8000) {
+  const delay = minMs + Math.random() * (maxMs - minMs);
+  return Math.round(delay);
+}
+
 // ─── Main Function ───────────────────────────────────────────────────────
 
 async function startBot() {
@@ -42,8 +74,8 @@ async function startBot() {
   isStarting = true;
 
   console.log('\n═══════════════════════════════════════════════════════════════');
-  console.log('  DeltaAI WhatsApp Bot v3.2');
-  console.log('  100% Free — Uses WhatsApp Web Protocol (Baileys)');
+  console.log('  DeltaAI WhatsApp Bot v4.0 — Anti-Ban Edition');
+  console.log('  Human-like behavior • Rate limited • Stealth mode');
   console.log('═══════════════════════════════════════════════════════════════\n');
 
   // ── Step 1: Start Web Server (only once!) ─────────────────────────
@@ -79,22 +111,34 @@ async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState(config.AUTH_DIR);
     const isNewAuth = !state.creds?.registered;
 
+    // ── CRITICAL: Browser fingerprint that matches real usage ──
+    // Android Chrome is the most common WhatsApp Web client
+    // This is what a real Samsung/Android user looks like
     sock = makeWASocket({
       version,
       auth: state,
       printQRInTerminal: true,
       logger: logger.child({ stream: 'wa-socket' }),
-      // Use realistic browser fingerprint — NOT 'DeltaAI Bot'
-      browser: ['Chrome (Linux)', 'Chrome', '125.0.6422.113'],
+      // Real Android Chrome fingerprint — most people link from Android
+      browser: ['Android', 'Chrome', '131.0.6778.200'],
+      // DON'T mark online on connect — bots do this, humans don't
       markOnlineOnConnect: false,
-      retryRequestDelayMs: 2000,
+      retryRequestDelayMs: 3000,
       maxMsgRetryCount: 2,
       connectTimeoutMs: 60_000,
-      keepAliveIntervalMs: 30_000,
+      // Keep alive but not too aggressive
+      keepAliveIntervalMs: 25_000,
       defaultQueryTimeoutMs: 60_000,
+      // Don't fire events for own messages
+      emitOwnEvents: false,
+      // Ignore broadcasts and newsletters
       shouldIgnoreJid: (jid) => {
         return jid?.includes('@broadcast') || jid?.includes('@newsletter');
       },
+      // Sync only recent history, not everything
+      syncFullHistory: false,
+      // Message query limit — don't download too much
+      messageCacheSize: 100,
     });
 
     // ── Step 3: Set up event handlers ───────────────────────────────────
@@ -104,7 +148,7 @@ async function startBot() {
     if (isNewAuth && config.PHONE_NUMBER) {
       console.log('[Pairing] Requesting pairing code for: ' + config.PHONE_NUMBER);
       // Wait a moment for socket to be ready
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, 3000));
       try {
         const code = await sock.requestPairingCode(config.PHONE_NUMBER);
         const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
@@ -139,6 +183,7 @@ async function startBot() {
       if (connection === 'open') {
         isStarting = false;
         reconnectCount = 0;
+        lastConnectionTime = Date.now();
         const botNumber = sock.user?.id?.split('@')[0] || 'unknown';
 
         updateBotState({
@@ -151,10 +196,11 @@ async function startBot() {
         console.log('\n═══════════════════════════════════════════════════════════════');
         console.log('  البوت متصل! رقم الواتساب: ' + botNumber);
         console.log('  جاهز لاستقبال الرسائل!');
+        console.log('  الحد الأقصى: ' + MAX_MESSAGES_PER_HOUR + ' رسالة/ساعة');
         console.log('═══════════════════════════════════════════════════════════════\n');
 
-        // Don't update profile status — it triggers anti-bot detection
-        // try { await sock.updateProfileStatus('DeltaAI Bot'); } catch (e) {}
+        // ── Anti-ban: DON'T update profile at all ──
+        // No profile status, no name change, nothing
       }
 
       if (connection === 'close') {
@@ -176,9 +222,12 @@ async function startBot() {
           reconnectCount = 0;
         }
 
-        // Progressive reconnect delay
+        // ── Anti-ban: Progressive reconnect with MINIMUM 10s delay ──
+        // Quick reconnections look bot-like
         reconnectCount++;
-        const delay = Math.min(reconnectCount * 3000, 30000); // 3s → 30s max
+        const minDelay = 10000; // At LEAST 10 seconds
+        const progressiveDelay = reconnectCount * 5000; // 5s more each attempt
+        const delay = Math.max(minDelay, Math.min(progressiveDelay, 120000)); // Cap at 2 min
         console.log('Reconnecting in ' + (delay/1000) + ' seconds... (attempt ' + reconnectCount + ')');
         setTimeout(() => startBot(), delay);
       }
@@ -188,7 +237,13 @@ async function startBot() {
 
     sock.ev.on('messages.upsert', async ({ messages }) => {
       for (const msg of messages) {
+        // Only process messages from others, not from bot itself
         if (msg.key && !msg.key.fromMe) {
+          // Don't process messages that are too old (5+ minutes)
+          const msgTimestamp = msg.messageTimestamp;
+          if (msgTimestamp && (Date.now() / 1000 - msgTimestamp) > 300) {
+            continue; // Skip old messages
+          }
           try {
             await handleMessage(sock, msg);
           } catch (error) {
@@ -214,7 +269,7 @@ async function startBot() {
     }
 
     reconnectCount++;
-    const delay = Math.min(reconnectCount * 3000, 30000);
+    const delay = Math.max(10000, Math.min(reconnectCount * 5000, 120000));
     console.log('Retrying in ' + (delay/1000) + ' seconds...');
     setTimeout(() => startBot(), delay);
   }
