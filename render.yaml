@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: deltaai-whatsapp-bot
+    runtime: docker
+    plan: free
+    envVars:
+      - key: DELTA_AI_URL
+        sync: false
+      - key: BOT_NAME
+        value: DeltaAI
+      - key: BOT_LANGUAGE
+        value: ar
+      - key: DEFAULT_MODEL
+        value: delta-general
+      - key: LOG_LEVEL
+        value: info
