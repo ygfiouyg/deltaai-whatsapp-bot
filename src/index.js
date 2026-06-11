@@ -84,12 +84,13 @@ async function startBot() {
       auth: state,
       printQRInTerminal: true,
       logger: logger.child({ stream: 'wa-socket' }),
-      browser: ['DeltaAI Bot', 'Chrome', '1.0.0'],
-      markOnlineOnConnect: true,
-      retryRequestDelayMs: 1000,
+      // Use realistic browser fingerprint — NOT 'DeltaAI Bot'
+      browser: ['Chrome (Linux)', 'Chrome', '125.0.6422.113'],
+      markOnlineOnConnect: false,
+      retryRequestDelayMs: 2000,
       maxMsgRetryCount: 2,
       connectTimeoutMs: 60_000,
-      keepAliveIntervalMs: 25_000,
+      keepAliveIntervalMs: 30_000,
       defaultQueryTimeoutMs: 60_000,
       shouldIgnoreJid: (jid) => {
         return jid?.includes('@broadcast') || jid?.includes('@newsletter');
@@ -152,9 +153,8 @@ async function startBot() {
         console.log('  جاهز لاستقبال الرسائل!');
         console.log('═══════════════════════════════════════════════════════════════\n');
 
-        try {
-          await sock.updateProfileStatus('DeltaAI Bot — اكتب أي حاجة وأنا هرد!');
-        } catch (e) {}
+        // Don't update profile status — it triggers anti-bot detection
+        // try { await sock.updateProfileStatus('DeltaAI Bot'); } catch (e) {}
       }
 
       if (connection === 'close') {
