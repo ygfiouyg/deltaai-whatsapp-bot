@@ -1,66 +1,67 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// DeltaAI WhatsApp Bot v2 — DeltaAI API Client
+// DeltaAI WhatsApp Bot v3 — DeltaAI API Client
 // ═══════════════════════════════════════════════════════════════════════════
-// Communicates with the DeltaAI Next.js backend.
-// Sends user messages to /api/chat/stream and parses SSE responses.
-// Reuses the ENTIRE AI pipeline — document intent, Smart Doc V2, quiz, PDF!
+// Sends messages to DeltaAI /api/chat/stream and parses SSE responses.
+// Simplified for reliability and speed.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import config from './config.js';
 
 /**
  * Send a chat message to DeltaAI and get the AI response.
- * @param {object} params
- * @returns {Promise<{content: string, pdfUrl: string|null, quizData: object|null, smartDocResult: object|null, imageDataUrl: string|null}>}
  */
 export async function sendToDeltaAI({ message, model, language, conversationId, userId, attachments = [] }) {
   const baseUrl = config.DELTA_AI_URL;
   const url = `${baseUrl}/api/chat/stream`;
 
-  // Build request body — same format the web frontend sends
+  // Build request body — only send what the API needs
   const body = {
     message,
     model: model || config.DEFAULT_MODEL,
-    language: language || config.BOT_LANGUAGE,
-    conversationId: conversationId || undefined,
-    autoSearch: config.ENABLE_WEB_SEARCH,
-    systemPromptMode: 'full',
   };
 
+  // Only add optional fields if they have values
+  if (language) body.language = language;
+  if (conversationId) body.conversationId = conversationId;
+
   // Encode attachments into the message
-  let fullMessage = message;
-  for (const att of attachments) {
-    if (att.type === 'image') {
-      fullMessage += `\n[📷 IMAGE:${att.name}|${att.mimeType}|${att.base64}]`;
-    } else if (att.type === 'pdf') {
-      fullMessage += `\n[📄 PDF:${att.name}|${att.size}|${att.base64}]`;
+  if (attachments.length > 0) {
+    let extra = '';
+    for (const att of attachments) {
+      if (att.type === 'image') {
+        extra += `\n[IMAGE:${att.name}|${att.mimeType}|${att.base64}]`;
+      } else if (att.type === 'pdf') {
+        extra += `\n[PDF:${att.name}|${att.size}|${att.base64}]`;
+      }
     }
+    body.message = message + extra;
   }
-  body.message = fullMessage;
 
   const headers = { 'Content-Type': 'application/json' };
 
   if (config.DELTA_AI_API_KEY) {
     headers['Authorization'] = `Bearer ${config.DELTA_AI_API_KEY}`;
   }
-  if (userId) {
-    headers['X-WhatsApp-User'] = userId;
-  }
+
+  console.log(`[DeltaAI] Sending to ${url} | model: ${body.model} | msg: ${body.message.substring(0, 50)}...`);
 
   try {
     const response = await fetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000), // 2 min timeout
+      signal: AbortSignal.timeout(60_000), // 1 min timeout
     });
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Unknown error');
+      console.error(`[DeltaAI] Error ${response.status}: ${errorText}`);
       throw new Error(`DeltaAI API error ${response.status}: ${errorText}`);
     }
 
-    return await parseSSEStream(response);
+    const result = await parseSSEStream(response);
+    console.log(`[DeltaAI] Got response: ${result.content.substring(0, 80)}...`);
+    return result;
   } catch (error) {
     if (error.name === 'TimeoutError') {
       throw new Error('انتهت مهلة الطلب — حاول مرة أخرى');
@@ -108,7 +109,7 @@ async function parseSSEStream(response) {
           if (event.quizData) quizData = event.quizData;
           if (event.imageDataUrl) imageDataUrl = event.imageDataUrl;
         } catch {
-          // Skip unparseable lines
+          // Skip unparseable lines (heartbeat, etc.)
         }
       }
     }
