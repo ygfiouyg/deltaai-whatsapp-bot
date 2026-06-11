@@ -1,14 +1,13 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// DeltaAI WhatsApp Bot v3.1 — Main Entry Point
+// DeltaAI WhatsApp Bot v3.2 — Main Entry Point
 // ═══════════════════════════════════════════════════════════════════════════
-// Supports TWO connection methods:
-// 1. PAIRING CODE (preferred): Set PHONE_NUMBER in .env → no QR scan needed!
-// 2. QR CODE (fallback): Scan QR from another device's browser
+// Auto-handles 401 disconnections by clearing auth and re-pairing.
+// Supports PAIRING CODE (preferred) and QR CODE (fallback).
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
 import pino from 'pino';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, rmSync } from 'fs';
 
 import config from './lib/config.js';
 import { handleMessage } from './handlers/message-handler.js';
@@ -22,6 +21,19 @@ const logger = pino({ level: config.LOG_LEVEL });
 let sock = null;
 let isStarting = false;
 let webServerStarted = false;
+let reconnectCount = 0;
+
+// ─── Clean Auth Data ─────────────────────────────────────────────────────
+function cleanAuth() {
+  try {
+    if (existsSync(config.AUTH_DIR)) {
+      rmSync(config.AUTH_DIR, { recursive: true, force: true });
+      console.log('[Auth] Cleaned old session data');
+    }
+  } catch (e) {
+    console.error('[Auth] Failed to clean auth:', e.message);
+  }
+}
 
 // ─── Main Function ───────────────────────────────────────────────────────
 
@@ -30,7 +42,7 @@ async function startBot() {
   isStarting = true;
 
   console.log('\n═══════════════════════════════════════════════════════════════');
-  console.log('  DeltaAI WhatsApp Bot v3.1');
+  console.log('  DeltaAI WhatsApp Bot v3.2');
   console.log('  100% Free — Uses WhatsApp Web Protocol (Baileys)');
   console.log('═══════════════════════════════════════════════════════════════\n');
 
@@ -70,14 +82,14 @@ async function startBot() {
     sock = makeWASocket({
       version,
       auth: state,
-      printQRInTerminal: true,   // Show QR in terminal too
+      printQRInTerminal: true,
       logger: logger.child({ stream: 'wa-socket' }),
       browser: ['DeltaAI Bot', 'Chrome', '1.0.0'],
       markOnlineOnConnect: true,
-      retryRequestDelayMs: 500,
+      retryRequestDelayMs: 1000,
       maxMsgRetryCount: 2,
-      connectTimeoutMs: 30_000,
-      keepAliveIntervalMs: 30_000,
+      connectTimeoutMs: 60_000,
+      keepAliveIntervalMs: 25_000,
       defaultQueryTimeoutMs: 60_000,
       shouldIgnoreJid: (jid) => {
         return jid?.includes('@broadcast') || jid?.includes('@newsletter');
@@ -87,22 +99,23 @@ async function startBot() {
     // ── Step 3: Set up event handlers ───────────────────────────────────
     console.log('[3/3] Setting up event handlers...');
 
-    // Request pairing code IMMEDIATELY after socket creation for new auth
+    // Request pairing code right away for new auth
     if (isNewAuth && config.PHONE_NUMBER) {
-      console.log('\n[Pairing] Requesting pairing code for: ' + config.PHONE_NUMBER);
+      console.log('[Pairing] Requesting pairing code for: ' + config.PHONE_NUMBER);
+      // Wait a moment for socket to be ready
+      await new Promise(r => setTimeout(r, 2000));
       try {
         const code = await sock.requestPairingCode(config.PHONE_NUMBER);
         const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
         console.log('\n╔════════════════════════════════════════════════════════════╗');
         console.log('║  كود الربط: ' + formattedCode);
         console.log('║');
-        console.log('║  افتح واتساب:');
-        console.log('║  الإعدادات > الأجهزة المرتبطة > ربط جهاز');
+        console.log('║  واتساب > إعدادات > أجهزة مرتبطة > ربط جهاز');
         console.log('║  > ربط برقم الهاتف > اكتب الكود');
         console.log('╚════════════════════════════════════════════════════════════╝\n');
         setPairingCode(formattedCode);
       } catch (err) {
-        console.error('[Pairing] Failed to request pairing code:', err.message);
+        console.error('[Pairing] Failed:', err.message);
         console.log('[Pairing] Will use QR code method instead');
       }
     } else if (isNewAuth) {
@@ -124,6 +137,7 @@ async function startBot() {
 
       if (connection === 'open') {
         isStarting = false;
+        reconnectCount = 0;
         const botNumber = sock.user?.id?.split('@')[0] || 'unknown';
 
         updateBotState({
@@ -135,7 +149,6 @@ async function startBot() {
 
         console.log('\n═══════════════════════════════════════════════════════════════');
         console.log('  البوت متصل! رقم الواتساب: ' + botNumber);
-        console.log('  DeltaAI Server: ' + config.DELTA_AI_URL);
         console.log('  جاهز لاستقبال الرسائل!');
         console.log('═══════════════════════════════════════════════════════════════\n');
 
@@ -156,12 +169,18 @@ async function startBot() {
 
         console.log('\nDisconnected — reason: ' + statusCode);
 
+        // If 401 (logged out), clean auth and re-pair
         if (statusCode === DisconnectReason.loggedOut) {
-          console.log('Session logged out. Will try to re-pair.');
+          console.log('[Auth] Session logged out — cleaning auth data and re-pairing...');
+          cleanAuth();
+          reconnectCount = 0;
         }
 
-        console.log('Reconnecting in 5 seconds...');
-        setTimeout(() => startBot(), 5000);
+        // Progressive reconnect delay
+        reconnectCount++;
+        const delay = Math.min(reconnectCount * 3000, 30000); // 3s → 30s max
+        console.log('Reconnecting in ' + (delay/1000) + ' seconds... (attempt ' + reconnectCount + ')');
+        setTimeout(() => startBot(), delay);
       }
     });
 
@@ -186,18 +205,27 @@ async function startBot() {
 
   } catch (error) {
     isStarting = false;
-    console.error('[2/3] Failed to connect to WhatsApp:', error.message);
-    console.log('Retrying in 15 seconds...');
-    setTimeout(() => startBot(), 15000);
+    console.error('[2/3] Failed to connect:', error.message);
+    
+    // If it's a connection failure, clean auth
+    if (error.message?.includes('Connection Failure') || error.message?.includes('401')) {
+      console.log('[Auth] Connection failure — cleaning auth data...');
+      cleanAuth();
+    }
+
+    reconnectCount++;
+    const delay = Math.min(reconnectCount * 3000, 30000);
+    console.log('Retrying in ' + (delay/1000) + ' seconds...');
+    setTimeout(() => startBot(), delay);
   }
 }
 
 // ─── Graceful Shutdown ────────────────────────────────────────────────────
 
 function gracefulShutdown(signal) {
-  console.log('\n[' + signal + '] Shutting down gracefully...');
+  console.log('\n[' + signal + '] Shutting down...');
   if (sock) {
-    try { sock.end(new Error('Shutdown requested')); } catch(e) {}
+    try { sock.end(new Error('Shutdown')); } catch(e) {}
   }
   process.exit(0);
 }
@@ -205,18 +233,16 @@ function gracefulShutdown(signal) {
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
-// ─── Error Handling ──────────────────────────────────────────────────────
-
 process.on('uncaughtException', (error) => {
-  console.error('[FATAL] Uncaught exception:', error.message);
+  console.error('[FATAL] Uncaught:', error.message);
 });
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[WARN] Unhandled rejection:', reason);
+  console.error('[WARN] Rejection:', reason);
 });
 
 // ─── Start! ──────────────────────────────────────────────────────────────
 
 startBot().catch((error) => {
-  console.error('[FATAL] Failed to start bot:', error.message);
+  console.error('[FATAL] Failed to start:', error.message);
 });
