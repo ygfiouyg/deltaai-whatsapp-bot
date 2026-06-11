@@ -52,7 +52,7 @@ export async function sendToDeltaAI({ message, model, language, conversationId, 
       method: 'POST',
       headers,
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(300_000), // 5 min timeout
+      signal: AbortSignal.timeout(120_000), // 2 min timeout
     });
 
     if (!response.ok) {

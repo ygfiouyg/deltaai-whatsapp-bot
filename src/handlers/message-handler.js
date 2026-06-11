@@ -186,7 +186,7 @@ async function cmdModel(sock, jid, phone, args, session) {
   const modelId = args[0];
   if (!modelId) {
     await sock.sendMessage(jid, {
-      text: `🤖 النموذج الحالي: ${session.model || config.DEFAULT_MODEL}\n\nالنماذج المتاحة:\n• delta-flash — سريع (افتراضي)\n• delta-pro — خبير ذكي\n• delta-ultra — الأقوى\n• delta-egyptian — مصري\n• delta-creative — مبدع\n• delta-code — مبرمج\n• delta-doctor — طبيب\n• delta-islamic — فقيه\n• delta-vision — تحليل صور\n• deepseek-v3 — DeepSeek\n• qwen-2-5 — Qwen\n• llama-3 — Llama 3\n\nاستخدم: !نموذج <اسم_النموذج>`
+      text: `🤖 النموذج الحالي: ${session.model || config.DEFAULT_MODEL}\n\nالنماذج المتاحة:\n• delta-pro — خبير ذكي (افتراضي)\n• delta-ultra — الأقوى\n• delta-flash — سريع\n• delta-egyptian — مصري\n• delta-creative — مبدع\n• delta-code — مبرمج\n• delta-doctor — طبيب\n• delta-islamic — فقيه\n• delta-vision — تحليل صور\n• deepseek-v3 — DeepSeek\n• qwen-2-5 — Qwen\n• llama-3 — Llama 3\n\nاستخدم: !نموذج <اسم_النموذج>`
     });
     return;
   }
