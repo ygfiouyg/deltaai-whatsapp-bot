@@ -1,15 +1,9 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// DeltaAI WhatsApp Bot v3 — Main Entry Point
+// DeltaAI WhatsApp Bot v3.1 — Main Entry Point
 // ═══════════════════════════════════════════════════════════════════════════
-// 1. Starts a web server for status display
-// 2. Connects to WhatsApp via Baileys using PAIRING CODE (no QR scan needed!)
-// 3. Shows pairing code on terminal + web page
-// 4. Routes incoming messages to DeltaAI AI pipeline
-//
-// PAIRING CODE METHOD:
-// - User enters a code like "ABCD-EFGH" in WhatsApp (Settings > Linked Devices)
-// - No need to scan QR code! Perfect for phone-only users!
-// - Set PHONE_NUMBER env var with your WhatsApp number (with country code)
+// Supports TWO connection methods:
+// 1. PAIRING CODE (preferred): Set PHONE_NUMBER in .env → no QR scan needed!
+// 2. QR CODE (fallback): Scan QR from another device's browser
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
@@ -28,7 +22,6 @@ const logger = pino({ level: config.LOG_LEVEL });
 let sock = null;
 let isStarting = false;
 let webServerStarted = false;
-let pairingCodeRequested = false;
 
 // ─── Main Function ───────────────────────────────────────────────────────
 
@@ -37,8 +30,7 @@ async function startBot() {
   isStarting = true;
 
   console.log('\n═══════════════════════════════════════════════════════════════');
-  console.log('  DeltaAI WhatsApp Bot v3');
-  console.log('  مع كود ربط — مش محتاج تمسح QR!');
+  console.log('  DeltaAI WhatsApp Bot v3.1');
   console.log('  100% Free — Uses WhatsApp Web Protocol (Baileys)');
   console.log('═══════════════════════════════════════════════════════════════\n');
 
@@ -78,7 +70,7 @@ async function startBot() {
     sock = makeWASocket({
       version,
       auth: state,
-      printQRInTerminal: false,
+      printQRInTerminal: true,   // Show QR in terminal too
       logger: logger.child({ stream: 'wa-socket' }),
       browser: ['DeltaAI Bot', 'Chrome', '1.0.0'],
       markOnlineOnConnect: true,
@@ -87,7 +79,6 @@ async function startBot() {
       connectTimeoutMs: 30_000,
       keepAliveIntervalMs: 30_000,
       defaultQueryTimeoutMs: 60_000,
-      mobile: false, // Important: use pairing code method, not mobile
       shouldIgnoreJid: (jid) => {
         return jid?.includes('@broadcast') || jid?.includes('@newsletter');
       },
@@ -96,41 +87,43 @@ async function startBot() {
     // ── Step 3: Set up event handlers ───────────────────────────────────
     console.log('[3/3] Setting up event handlers...');
 
+    // Request pairing code IMMEDIATELY after socket creation for new auth
+    if (isNewAuth && config.PHONE_NUMBER) {
+      console.log('\n[Pairing] Requesting pairing code for: ' + config.PHONE_NUMBER);
+      try {
+        const code = await sock.requestPairingCode(config.PHONE_NUMBER);
+        const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
+        console.log('\n╔════════════════════════════════════════════════════════════╗');
+        console.log('║  كود الربط: ' + formattedCode);
+        console.log('║');
+        console.log('║  افتح واتساب:');
+        console.log('║  الإعدادات > الأجهزة المرتبطة > ربط جهاز');
+        console.log('║  > ربط برقم الهاتف > اكتب الكود');
+        console.log('╚════════════════════════════════════════════════════════════╝\n');
+        setPairingCode(formattedCode);
+      } catch (err) {
+        console.error('[Pairing] Failed to request pairing code:', err.message);
+        console.log('[Pairing] Will use QR code method instead');
+      }
+    } else if (isNewAuth) {
+      console.log('\nلا يوجد رقم هاتف — هنستخدم طريقة مسح QR');
+      console.log('افتح المتصفح على: http://192.168.1.7:' + config.WEB_PORT + '\n');
+    }
+
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
-      // Handle QR code (fallback — used if no pairing code)
+      // Handle QR code
       if (qr) {
-        console.log('\nQR code generated (fallback method)');
         try {
           await setQRCode(qr);
         } catch (e) {
           console.error('[Web] Failed to update QR:', e.message);
         }
-
-        // If we have a phone number and haven't requested pairing code yet,
-        // request it instead of using QR
-        if (config.PHONE_NUMBER && !pairingCodeRequested) {
-          pairingCodeRequested = true;
-          try {
-            const code = await sock.requestPairingCode(config.PHONE_NUMBER);
-            const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
-            console.log('\n═══════════════════════════════════════════════════════════════');
-            console.log(`  كود الربط: ${formattedCode}`);
-            console.log('  افتح واتساب > الإعدادات > الأجهزة المرتبطة > ربط برقم الهاتف');
-            console.log('  واكتب الكود ده!');
-            console.log('═══════════════════════════════════════════════════════════════\n');
-            setPairingCode(formattedCode);
-          } catch (err) {
-            console.error('[Pairing] Failed to request pairing code:', err.message);
-            console.log('[Pairing] Falling back to QR code method');
-          }
-        }
       }
 
       if (connection === 'open') {
         isStarting = false;
-        pairingCodeRequested = false;
         const botNumber = sock.user?.id?.split('@')[0] || 'unknown';
 
         updateBotState({
@@ -141,8 +134,8 @@ async function startBot() {
         });
 
         console.log('\n═══════════════════════════════════════════════════════════════');
-        console.log(`  البوت متصل! رقم الواتساب: ${botNumber}`);
-        console.log(`  DeltaAI Server: ${config.DELTA_AI_URL}`);
+        console.log('  البوت متصل! رقم الواتساب: ' + botNumber);
+        console.log('  DeltaAI Server: ' + config.DELTA_AI_URL);
         console.log('  جاهز لاستقبال الرسائل!');
         console.log('═══════════════════════════════════════════════════════════════\n');
 
@@ -153,7 +146,6 @@ async function startBot() {
 
       if (connection === 'close') {
         isStarting = false;
-        pairingCodeRequested = false;
         const statusCode = lastDisconnect?.error?.output?.statusCode;
 
         updateBotState({
@@ -162,15 +154,14 @@ async function startBot() {
           pairingCode: null,
         });
 
-        console.log(`\nDisconnected — reason: ${statusCode}`);
+        console.log('\nDisconnected — reason: ' + statusCode);
 
         if (statusCode === DisconnectReason.loggedOut) {
-          console.log('Session logged out. Need to re-pair.');
+          console.log('Session logged out. Will try to re-pair.');
         }
 
-        const delay = 5000;
-        console.log(`Reconnecting in ${delay/1000} seconds...`);
-        setTimeout(() => startBot(), delay);
+        console.log('Reconnecting in 5 seconds...');
+        setTimeout(() => startBot(), 5000);
       }
     });
 
@@ -190,21 +181,11 @@ async function startBot() {
 
     console.log('[3/3] Event handlers ready');
 
-    if (isNewAuth && config.PHONE_NUMBER) {
-      console.log('\nاول مرة — هنستخدم كود الربط (مش محتاج تمسح QR)');
-    } else if (isNewAuth) {
-      console.log('\nاول مرة — لو عايز تستخدم كود ربط بدل QR:');
-      console.log('اضف PHONE_NUMBER في ملف .env (مثال: PHONE_NUMBER=201234567890)');
-    } else {
-      console.log('\nالجلسة محفوظة — البوت هيكمل تلقائي!');
-    }
-
     const stats = conversationManager.getStats();
     updateBotState({ userCount: stats.totalUsers, messageCount: stats.totalMessages });
 
   } catch (error) {
     isStarting = false;
-    pairingCodeRequested = false;
     console.error('[2/3] Failed to connect to WhatsApp:', error.message);
     console.log('Retrying in 15 seconds...');
     setTimeout(() => startBot(), 15000);
@@ -214,7 +195,7 @@ async function startBot() {
 // ─── Graceful Shutdown ────────────────────────────────────────────────────
 
 function gracefulShutdown(signal) {
-  console.log(`\n[${signal}] Shutting down gracefully...`);
+  console.log('\n[' + signal + '] Shutting down gracefully...');
   if (sock) {
     try { sock.end(new Error('Shutdown requested')); } catch(e) {}
   }
